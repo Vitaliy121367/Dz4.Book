@@ -24,6 +24,9 @@ namespace Dz4.Services
     public class LibraryService : ILibraryService
     {
         private readonly string connectionString = @"Server=DESKTOP-1BJ6LFG;Database=LibraryDB;Integrated Security=True;TrustServerCertificate=True;";
+        private static readonly object _lock = new();            
+        private static readonly Mutex _mutex = new();             
+        private static volatile bool _isProcessing = false;
 
         public async Task<Book> CreateBookAsync(Book book)
         {
@@ -180,6 +183,28 @@ namespace Dz4.Services
         }
         public async Task<BookHistory> takeReturnBook(int userId, int bookId)
         {
+            _mutex.WaitOne();
+
+            try
+            {
+                if (_isProcessing)
+                    throw new Exception("Операция уже выполняется другим потоком.");
+
+                _isProcessing = true;
+
+                lock (_lock)
+                {
+                    return takeReturnBookInternal(userId, bookId).GetAwaiter().GetResult();
+                }
+            }
+            finally
+            {
+                _isProcessing = false;
+                _mutex.ReleaseMutex();
+            }
+        }
+        private async Task<BookHistory> takeReturnBookInternal(int userId, int bookId)
+        {
             using (SqlConnection conn = new SqlConnection(connectionString))
             {
                 await conn.OpenAsync();
@@ -188,19 +213,18 @@ namespace Dz4.Services
                     "SELECT * FROM Books WHERE Id = @Id", new { Id = bookId });
 
                 if (book == null)
-                    throw new Exception("Book not find");
+                    throw new Exception("Книга не найдена");
 
                 bool newAvailability = !book.IsAvailable;
                 string action = newAvailability ? "RETURN" : "TAKE";
                 DateTime actionDate = DateTime.Now;
+                DateTime? dueDate = newAvailability ? null : actionDate.AddDays(14);
 
                 var updateQuery = @"
-                UPDATE Books 
-                SET IsAvailable = @IsAvailable,
+            UPDATE Books 
+            SET IsAvailable = @IsAvailable,
                 DueDate = @DueDate
-                WHERE Id = @Id";
-
-                DateTime? dueDate = newAvailability ? null : actionDate.AddDays(14);
+            WHERE Id = @Id";
 
                 await conn.ExecuteAsync(updateQuery, new
                 {
@@ -212,12 +236,12 @@ namespace Dz4.Services
                 var history = new BookHistory(bookId, userId, action, actionDate);
 
                 var historyQuery = @"
-                INSERT INTO BookHistory (BookId, UserId, Action, ActionDate)
-                VALUES (@BookId, @UserId, @Action, @ActionDate)";
+            INSERT INTO BookHistory (BookId, UserId, Action, ActionDate)
+            VALUES (@BookId, @UserId, @Action, @ActionDate)";
 
                 await conn.ExecuteAsync(historyQuery, history);
-
                 await conn.CloseAsync();
+
                 return history;
             }
         }
