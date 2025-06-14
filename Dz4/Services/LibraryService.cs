@@ -188,7 +188,7 @@ namespace Dz4.Services
             try
             {
                 if (_isProcessing)
-                    throw new Exception("Операция уже выполняется другим потоком.");
+                    throw new Exception("The operation is already being performed by another thread");
 
                 _isProcessing = true;
 
